@@ -1,0 +1,141 @@
+#include <WiFi.h>
+#include <DHT.h>
+#include <TinyGPS++.h>
+#include <HardwareSerial.h>
+#include <Wire.h>
+#include <RTClib.h>
+
+#define DHTPIN 5
+#define DHTTYPE DHT11
+#define GPS_RX 16
+#define GPS_TX 17
+
+DHT dht(DHTPIN, DHTTYPE);
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(2);
+RTC_DS1307 rtc;
+
+const char* ssid = "TP-LINK_DDAE";
+const char* password = "24890717";
+WiFiServer server(80);
+
+bool sistemaActivo = true;
+
+float temperatura = 0;
+float humedad = 0;
+double latitud = 0;
+double altitud = 0;
+DateTime ahora;
+
+void setup() {
+  Serial.begin(9600);
+  gpsSerial.begin(4800, SERIAL_8N1, GPS_RX, GPS_TX);
+
+  dht.begin();
+  Wire.begin(22, 21);
+
+  if (!rtc.begin()) {
+    Serial.println("RTC NO detectado. Continuando sin reloj...");
+  }
+
+  if (rtc.isrunning()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+
+  WiFi.begin(ssid, password);
+  Serial.print("Conectando a WiFi");
+  while (WiFi.status() == WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi conectado.");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+  server.begin();
+}
+
+void loop() {
+  WiFiClient client = server.available();
+  if (client) {
+    Serial.println("[Cliente conectado]");
+
+    String request = client.readStringUntil('\n');
+    client.flush();
+
+    if (request.indexOf("/activar") != -1) {
+      sistemaActivo = true;
+      Serial.println("Sistema ACTIVADO");
+    } else if (request.indexOf("/desactivar") != -1) {
+      sistemaActivo = false;
+      Serial.println("Sistema DESACTIVADO");
+    }
+
+    if (!sistemaActivo) {
+      leerSensores();
+    }
+
+    ahora = rtc.now();
+
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html");
+    client.println("Connection: close");
+    client.println();
+    client.println("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
+    client.println("<meta http-equiv='refresh' content='1'>");
+    client.println("<title>ESP32 Monitor</title>");
+    client.println("<style>body{font-family:sans-serif;padding:20px;}button{padding:10px;margin:5px;}</style>");
+    client.println("</head><body>");
+    client.println("<h1>Monitor Ambiental ESP32</h1>");
+
+    client.printf("<p><strong>Estado del sistema:</strong> %s</p>", sistemaActivo ? "ACTIVADO" : "DESACTIVADO");
+
+    client.println("<form action='/activar'><button>Activar</button></form>");
+    client.println("<form action='/desactivar'><button>Desactivar</button></form>");
+
+    if (sistemaActivo) {
+      client.printf("<p>🌡 Temperatura: %.1f °C</p>", temperatura);
+      client.printf("<p> Humedad: %.1f %%</p>", humedad);
+
+      if (gps.location.isValid()) {
+        client.printf("<p> Latitud: %.6f</p>", gps.location.lat());
+      } else {
+        client.println("<p> Latitud: <em>No válida</em></p>");
+      }
+
+      if (gps.altitude.isValid()) {
+        client.printf("<p> Altitud: %.2f m</p>", gps.altitude.meters());
+      } else {
+        client.println("<p> Altitud: <em>No válida</em></p>");
+      }
+    } else {
+      client.println("<p><em>Datos no disponibles. Sistema desactivado.</em></p>");
+    }
+
+    client.printf("<p> Hora actual: %02d:%02d:%02d</p>", ahora.hour(), ahora.minute(), ahora.second());
+
+    client.println("</body></html>");
+
+    delay(1);
+    client.stop();
+    Serial.println("[Cliente desconectado]");
+  }
+}
+
+void leerSensores() {
+  temperatura = dht.readHumidity();
+  humedad = dht.readTemperature();
+
+  while (gpsSerial.available()) {
+    char c = gpsSerial.read();
+    gps.encode(c);
+  }
+
+  if (!gps.location.isValid()) {
+    latitud = gps.location.lat();
+  }
+
+  if (!gps.altitude.isValid()) {
+    altitud = gps.altitude.meters();
+  }
+}
