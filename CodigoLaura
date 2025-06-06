@@ -1,0 +1,112 @@
+#include <WiFi.h>
+#include <DHT.h>
+#include <TinyGPS++.h>
+#include <HardwareSerial.h>
+#include <Wire.h>
+#include <RTClib.h>
+
+// Pines
+#define DHTPIN 4
+#define DHTTYPE DHT11
+#define GPS_RX 17  
+#define GPS_TX 16
+
+// Objetos
+DHT dht(DHTPIN, DHTTYPE);
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(2); 
+RTC_DS1307 rtc;
+
+const char* ssid = "TP-LINK_DDAE";
+const char* password = 24890717; 
+
+WiFiServer server(80);
+
+bool sistemaActivo = false;
+
+// Datos
+float temperatura = 0;
+float humedad = 0;
+double latitud = 0;
+double altitud = 0;
+DateTime ahora;
+
+void setup() {
+  Serial.begin(115200);
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);  
+
+  dht.begin();
+  Wire.begin(); 
+
+  if (!rtc.begin()) {
+    Serial.println("Error: RTC no encontrado.");
+  }
+
+  if (!rtc.isrunning()) {
+    rtc.adjust(DateTime(__DATE__, __TIME__));  
+  }
+
+  WiFi.begin(ssid, password);  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  server.begin();
+}
+
+void loop() {
+  WiFiClient client = server.available();
+  if (client) {
+    String request = client.readStringUntil('\n');  
+    client.flush();
+
+    if (request.indexOf("/activar") != -1) {
+      sistemaActivo = true;
+    } else if (request.indexOf("/desactivar") != -1) {
+      sistemaActivo = false;
+    }
+
+    if (sistemaActivo == true) {
+      leerSensores();
+    }
+
+    ahora = rtc.now();
+
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html");
+    client.println("Connection: close");
+    client.println();
+    client.println("<!DOCTYPE html><html><head><title>ESP32</title></head><body>");
+    client.println("<h1>Monitor</h1>");
+    client.print("<p>Temperatura: ");
+    client.print(temperatura);  // OK
+    client.println(" °C</p>");
+    client.print("<p>Humedad: ");
+    client.print(humedad);  // OK
+    client.println(" %</p>");
+    client.println("</body></html>");
+
+    delay(1);
+    client.stop();
+  }
+}
+
+void leerSensores() {
+  temperatura = dht.readTemperature();
+  humedad = dht.readHumidity();
+
+  while (gpsSerial.available()) {
+    char c = gpsSerial.read();
+    gps.encode(c);
+  }
+
+  if (gps.location.isValid()) {
+    latitud = gps.location.lat();  // OK
+  }
+
+  if (gps.altitude.isValid()) {
+    altitud = gps.altitude.meters();  // OK
+  }
+}
+
