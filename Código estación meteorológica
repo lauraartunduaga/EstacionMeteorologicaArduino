@@ -1,0 +1,105 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DHT.h>
+#include <TinyGPSPlus.h>
+#include <HardwareSerial.h>
+#include <Wire.h>
+#include <RTClib.h>
+
+// ====== CONFIGURACIÓN WIFI ======
+const char* ssid = "TU_SSID";
+const char* password = "TU_CONTRASEÑA";
+
+// ====== OBJETOS Y PINES ======
+#define DHTPIN 4
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+RTC_DS1307 rtc;
+
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(2); // UART2: RX = 16, TX = 17
+
+WebServer server(80);
+
+bool sistemaActivo = false;
+
+// ====== FUNCIONES AUXILIARES ======
+String obtenerPaginaWeb(float temp, float hum, String hora, String lat, String lng) {
+  String estado = sistemaActivo ? "Activo" : "Inactivo";
+  String boton = sistemaActivo ? "<button onclick=\"toggleSistema()\">Desactivar</button>" : "<button onclick=\"toggleSistema()\">Activar</button>";
+
+  String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ESP32 Monitor</title><script>"
+                "function toggleSistema() { fetch('/toggle'); location.reload(); }"
+                "</script></head><body><h2>Estado del Sistema: " + estado + "</h2>" +
+                boton +
+                "<h3>Hora: " + hora + "</h3>" +
+                "<h3>Temperatura: " + String(temp) + " °C</h3>" +
+                "<h3>Humedad: " + String(hum) + " %</h3>" +
+                "<h3>Ubicación: Latitud: " + lat + ", Longitud: " + lng + "</h3>" +
+                "</body></html>";
+  return html;
+}
+
+String obtenerHora() {
+  DateTime now = rtc.now();
+  char buffer[20];
+  sprintf(buffer, "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+  return String(buffer);
+}
+
+void handleRoot() {
+  float t = 0, h = 0;
+  String lat = "No Fix", lng = "No Fix", hora = obtenerHora();
+
+  if (sistemaActivo) {
+    t = dht.readTemperature();
+    h = dht.readHumidity();
+
+    // Leer GPS
+    while (gpsSerial.available()) {
+      gps.encode(gpsSerial.read());
+    }
+    if (gps.location.isValid()) {
+      lat = String(gps.location.lat(), 6);
+      lng = String(gps.location.lng(), 6);
+    }
+  }
+
+  server.send(200, "text/html", obtenerPaginaWeb(t, h, hora, lat, lng));
+}
+
+void handleToggle() {
+  sistemaActivo = !sistemaActivo;
+  server.send(200, "text/plain", "OK");
+}
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+  rtc.begin();
+  gpsSerial.begin(9600, SERIAL_8N1, 16, 17); // RX = 16, TX = 17
+
+  if (!rtc.isrunning()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+
+  // Conexión WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Conectando a WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Conectado. IP: " + WiFi.localIP().toString());
+
+  // Servidor Web
+  server.on("/", handleRoot);
+  server.on("/toggle", handleToggle);
+  server.begin();
+  Serial.println("Servidor iniciado");
+}
+
+void loop() {
+  server.handleClient();
+}
